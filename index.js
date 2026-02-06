@@ -1,10 +1,3 @@
-// ===== سيرفر شات وارف v2 =====
-// .env المطلوب:
-//   ANTHROPIC_API_KEY=sk-ant-...
-//   SALLA_CLIENT_ID=...
-//   SALLA_CLIENT_SECRET=...
-//   PORT=3000 (اختياري)
-
 require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
@@ -14,7 +7,6 @@ const port = process.env.PORT || 3000;
 
 app.use(express.json());
 
-// CORS
 app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Allow-Headers', 'Content-Type');
@@ -23,61 +15,53 @@ app.use((req, res, next) => {
     next();
 });
 
-// ===== Salla =====
-const SALLA_API_BASE = 'https://api.salla.dev/admin/v2';
-const SALLA_CLIENT_ID = process.env.SALLA_CLIENT_ID;
-const SALLA_CLIENT_SECRET = process.env.SALLA_CLIENT_SECRET;
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+const SALLA_API = 'https://api.salla.dev/admin/v2';
+const SALLA_CID = process.env.SALLA_CLIENT_ID;
+const SALLA_CS = process.env.SALLA_CLIENT_SECRET;
+const ANTH_KEY = process.env.ANTHROPIC_API_KEY;
 
-let sallaAccessToken = null;
-let tokenExpiry = 0;
+let sToken = null, sExp = 0;
 
-async function getSallaToken() {
-    if (sallaAccessToken && Date.now() < tokenExpiry) return sallaAccessToken;
+async function getToken() {
+    if (sToken && Date.now() < sExp) return sToken;
     try {
         const r = await axios.post('https://accounts.salla.dev/oauth2/token', {
-            client_id: SALLA_CLIENT_ID,
-            client_secret: SALLA_CLIENT_SECRET,
-            grant_type: 'client_credentials'
+            client_id: SALLA_CID, client_secret: SALLA_CS, grant_type: 'client_credentials'
         }, { headers: { 'Content-Type': 'application/json' } });
-        sallaAccessToken = r.data.access_token;
-        tokenExpiry = Date.now() + ((r.data.expires_in || 3600) - 300) * 1000;
-        console.log('✅ توكن سلة تم');
-        return sallaAccessToken;
+        sToken = r.data.access_token;
+        sExp = Date.now() + ((r.data.expires_in || 3600) - 300) * 1000;
+        console.log('✅ توكن سلة جاهز');
+        return sToken;
     } catch (e) {
-        console.error('❌ توكن سلة فشل:', e.message);
+        console.error('❌ توكن سلة:', e.message);
         return null;
     }
 }
 
-async function getOrder(orderNumber) {
-    await getSallaToken();
-    if (!sallaAccessToken) return null;
+async function getOrder(num) {
+    await getToken();
+    if (!sToken) return null;
     try {
-        const r = await axios.get(`${SALLA_API_BASE}/orders`, {
-            headers: { 'Authorization': `Bearer ${sallaAccessToken}` },
-            params: { search: orderNumber }
+        const r = await axios.get(`${SALLA_API}/orders`, {
+            headers: { Authorization: `Bearer ${sToken}` },
+            params: { search: num }
         });
-        const orders = r.data.data || [];
-        return orders.length > 0 ? orders[0] : null;
+        const o = r.data.data || [];
+        return o.length ? o[0] : null;
     } catch (e) {
-        console.error('❌ خطأ جلب الطلب:', e.message);
+        console.error('❌ طلب:', e.message);
         return null;
     }
 }
 
-// ===== استخراج رقم الطلب (ذكي) =====
-function extractOrderNumber(text) {
+function extractOrder(text) {
     if (!text) return null;
-    const patterns = [
+    const pats = [
         /(?:رقم\s*طلب(?:ي)?|طلب\s*(?:رقم|#)?|رقم\s*(?:ال)?طلب|order\s*#?\s*|#)\s*(\d{4,})/i,
         /(?:طلبي|طلب)\s+(\d{4,})/i,
         /(?:متابعة|تتبع|حالة)\s+(?:طلب\s*)?#?\s*(\d{4,})/i,
     ];
-    for (const p of patterns) {
-        const m = text.match(p);
-        if (m) return m[1];
-    }
+    for (const p of pats) { const m = text.match(p); if (m) return m[1]; }
     if (/طلب|order|متابعة|تتبع|حالة/i.test(text)) {
         const m = text.match(/\b(\d{5,})\b/);
         if (m) return m[1];
@@ -85,108 +69,90 @@ function extractOrderNumber(text) {
     return null;
 }
 
-// ===== اختصارات ذكية =====
-function getQuickReplies(msg, hasOrder) {
-    if (hasOrder) return ['متابعة الطلب', 'التواصل مع الدعم', 'سياسة الاسترجاع'];
+function getQR(msg, order) {
+    if (order) return ['متابعة الطلب', 'التواصل مع الدعم', 'سياسة الاسترجاع'];
     if (/خدم|سعر|تكلف|كم|باقة|عرض|اسعار/i.test(msg)) return ['وش المتطلبات؟', 'مدة التنفيذ', 'طريقة التسليم'];
     if (/طلب|متابع|تتبع/i.test(msg)) return ['متابعة الطلب', 'التواصل مع الدعم'];
     return null;
 }
 
-// ===== System Prompt - عفوي وصارم =====
-function buildSystemPrompt(pageUrl, pageTitle, pageExcerpt) {
-    return `أنت مساعد وارف — صاحب العميل اللي يساعده بكل بساطة.
+function sysPrompt(url, title, excerpt) {
+    return `أنت مساعد وارف — تتكلم مع العميل كأنك صاحبه، بلهجة سعودية عفوية ومحترمة.
 
-## شخصيتك:
-- تكلم العميل كأنك صاحبه، بلهجة سعودية خفيفة وودّية
-- ردودك مختصرة ومباشرة (سطرين إلى 4 أسطر بالكثير)
-- لا تسوي مقدمات أو ترحيب زايد — ادخل بالموضوع
-- استخدم إيموجي واحد أو اثنين بالكثير، وبس لو يناسب
-- لو تحتاج معلومة من العميل، اسأله سؤال واحد واضح ومحدد بدل ما تكتب كلام كثير
+شخصيتك:
+- ردودك قصيرة ومباشرة (سطرين لـ 4 بالكثير)
+- ادخل بالموضوع بدون مقدمات
+- لو تحتاج معلومة، اسأل سؤال واحد واضح
+- إيموجي خفيف (1-2 بس لو يناسب)
 
-## قواعد صارمة:
-1. معلوماتك عن الخدمات والأسعار والتفاصيل مصدرها الوحيد هو "محتوى الصفحة" تحت. لا تخترع أي سعر أو مدة أو تفصيلة مو موجودة فيه.
-2. لو المعلومة مو موجودة، لا تقول "ما عندي معلومة" أو "بناء على الصفحة". بدالها اسأل العميل سؤال يساعدك تفيده، أو وجّهه للتواصل المباشر.
-3. ممنوع تقول أبداً "بناء على محتوى الصفحة" أو "حسب المعلومات المتوفرة" أو أي عبارة تكشف إنك تقرأ من مصدر. تكلم بشكل طبيعي.
-4. لو العميل سأل عن شي ما تعرفه: "والله ما عندي التفصيلة ذي، بس تقدر تتواصل مع الفريق وبيفيدونك 😊"
-5. استخدم نقاط (•) بس لو تسرد 3 أشياء أو أكثر.
+قواعد:
+1. كل معلوماتك عن الخدمات والأسعار من المحتوى تحت فقط. لا تخترع شي مو موجود.
+2. لا تقول أبداً: "بناء على الصفحة" أو "حسب المعلومات المتوفرة" أو "المحتوى يذكر" أو أي عبارة تبيّن إنك تقرأ من مصدر. تكلم طبيعي وكأنك تعرف المعلومة من راسك.
+3. لو ما تعرف: اسأل سؤال يوضح، أو قل بعفوية "هالشي أفضل تتواصل فيه مع الفريق مباشرة وبيساعدونك 😊"
+4. لا ترحب بكل رد. ادخل بالفايدة.
+5. نقاط (•) بس لو عندك 3+ أشياء تسردها.
 
-## محتوى الصفحة:
-عنوان: ${pageTitle || ''}
-${pageExcerpt || 'لا يوجد محتوى'}
-`;
+المحتوى:
+عنوان: ${title || ''}
+${excerpt || 'لا يوجد'}`;
 }
 
-// ===== Claude API =====
-async function askClaude(userMessage, systemPrompt) {
+async function askAI(msg, sp) {
     try {
         const r = await axios.post('https://api.anthropic.com/v1/messages', {
             model: 'claude-3-haiku-20240307',
             max_tokens: 350,
             temperature: 0.3,
-            system: systemPrompt,
-            messages: [{ role: 'user', content: userMessage }]
+            system: sp,
+            messages: [{ role: 'user', content: msg }]
         }, {
             headers: {
-                'x-api-key': ANTHROPIC_API_KEY,
+                'x-api-key': ANTH_KEY,
                 'anthropic-version': '2023-06-01',
                 'content-type': 'application/json'
             }
         });
         return r.data.content[0].text;
     } catch (e) {
-        console.error('❌ Claude خطأ:', e.response?.data || e.message);
-        return 'عذراً صار خطأ تقني، حاول مرة ثانية أو كلم الدعم 🙏';
+        console.error('❌ AI:', e.response?.data || e.message);
+        return 'عذراً صار خطأ، جرب مرة ثانية أو كلم الدعم 🙏';
     }
 }
 
-// ===== رد الطلب =====
-function formatOrderReply(order) {
-    const status = order.status?.name || order.status || 'غير محدد';
-    const total = order.total ? `${order.total} ريال` : '';
-    let r = `طلبك #${order.id} حالته: ${status}`;
-    if (total) r += ` 💰 المبلغ: ${total}`;
-    r += `\n\nتحتاج شي ثاني؟ 😊`;
-    return r;
+function fmtOrder(o) {
+    const s = o.status?.name || o.status || 'غير محدد';
+    const t = o.total ? ` 💰 المبلغ: ${o.total} ريال` : '';
+    return `طلبك #${o.id} حالته: ${s}${t}\n\nتحتاج شي ثاني؟ 😊`;
 }
 
-// ===== API =====
 app.post('/api/chat', async (req, res) => {
     const { message, page_url, page_title, page_excerpt } = req.body;
-
-    if (!message?.trim()) {
-        return res.json({ reply: 'هلا! وش تبي تعرف؟ 😊' });
-    }
+    if (!message?.trim()) return res.json({ reply: 'هلا! وش تبي تعرف؟ 😊' });
 
     const msg = message.trim();
-    console.log(`📩 ${msg}`);
+    console.log('📩', msg);
 
-    // 1) طلب؟
-    const orderNum = extractOrderNumber(msg);
-    if (orderNum) {
-        console.log(`🔍 طلب: ${orderNum}`);
-        const order = await getOrder(orderNum);
-        if (order) {
-            return res.json({ reply: formatOrderReply(order), quick_replies: getQuickReplies(msg, true) });
-        }
+    const oNum = extractOrder(msg);
+    if (oNum) {
+        console.log('🔍 طلب:', oNum);
+        const o = await getOrder(oNum);
+        if (o) return res.json({ reply: fmtOrder(o), quick_replies: getQR(msg, true) });
         return res.json({
-            reply: `ما لقيت طلب بالرقم ${orderNum} 🤔 تأكد من الرقم وجرب مرة ثانية`,
+            reply: `ما لقيت طلب بالرقم ${oNum} 🤔\nتأكد من الرقم وجرب مرة ثانية`,
             quick_replies: ['التواصل مع الدعم', 'متابعة الطلب']
         });
     }
 
-    // 2) Claude
-    const sp = buildSystemPrompt(page_url, page_title, page_excerpt);
-    const reply = await askClaude(msg, sp);
-
-    return res.json({ reply, quick_replies: getQuickReplies(msg, false) });
+    const sp = sysPrompt(page_url, page_title, page_excerpt);
+    const reply = await askAI(msg, sp);
+    return res.json({ reply, quick_replies: getQR(msg, false) });
 });
 
 app.get('/', (req, res) => {
-    res.send('<html dir="rtl"><body style="font-family:sans-serif;text-align:center;padding:50px"><h1>🤖 سيرفر وارف شغال!</h1><p>POST → /api/chat</p></body></html>');
+    res.send('<html dir="rtl"><body style="font-family:sans-serif;text-align:center;padding:50px"><h1>🤖 سيرفر وارف شغال!</h1></body></html>');
 });
 
 app.listen(port, async () => {
-    console.log(`🚀 وارف شغال على ${port}`);
-    await getSallaToken();
+    console.log(`🚀 وارف على ${port}`);
+    await getToken();
 });
