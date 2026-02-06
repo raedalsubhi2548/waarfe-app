@@ -5,6 +5,12 @@ const app = express();
 const port = process.env.PORT || 3000;
 
 app.use(express.json());
+// أضف هذا الكود لتجنب مشكلة CORS
+app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Headers', 'Content-Type');
+    next();
+});
 
 const SALLA_API_BASE = 'https://api.salla.dev/admin/v2';
 const SALLA_CLIENT_ID = process.env.SALLA_CLIENT_ID;
